@@ -133,20 +133,24 @@ Rect2 RectPosSize(float x, float y, float width, float height)
 	return result;
 }
 
-/*
-float GetWidth()
+float GetWidth(Rect2 rect)
 {
-	
+	return (rect.max.x - rect.min.x);
+}
+
+float GetHeight(Rect2 rect)
+{
+	return (rect.max.y - rect.min.y);
+}
+
+Vector2 GetCenter(Rect2 rect)
+{
+	return V2(rect.min.x + 0.5f * GetWidth(rect), rect.min.y + 0.5f * GetHeight(rect));
 }
 
 Rect2 GrowBy(Rect2 base, Rect2 extension)
 {
-	Rect2 result = base;
-	
-	result.min.x = result.min.x - extension.;
-	result.height = result.height + extension.height;
-	
-	return result;
+	return RectPosSize(GetCenter(base).x, GetCenter(base).y, GetWidth(base) + GetWidth(extension), GetHeight(base) + GetHeight(extension));
 }
 
 bool Contains(Rect2 rect, Vector2 vec)
@@ -160,9 +164,8 @@ bool Contains(Rect2 rect, Vector2 vec)
 bool Intersect(Rect2 rect1, Rect2 rect2)
 {
 	Rect2 collision_rect = GrowBy(rect1, rect2);
-	return Contains(collision_rect, V2(rect2.x, rect2.y));
+	return Contains(collision_rect, GetCenter(rect2));
 }
-*/
 
 int RoundFloatToInt(float in)
 {
@@ -354,7 +357,8 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 	MSG message;
 	bool open = true;
 	Vector2 velocity = V2(0, 0);
-	Vector2 position = V2(100, 100);
+	Vector2 position = V2(200, 200);
+	float timestep = 1.0f; //TODO proper timestep
 	
 	bool w_down = false;
 	bool a_down = false;
@@ -422,7 +426,6 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 			DispatchMessage(&message);
 		}
 		
-		float timestep = 1.0f; //TODO proper timestep
 		float multiplier = 1.0f;
 		Vector2 acceleration = V2(0, 0);
 		
@@ -457,24 +460,34 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 		}
 		
 		acceleration = acceleration - (velocity * 0.05f);
-		velocity = (acceleration * timestep) + velocity;
-		position = (acceleration * 0.5f * timestep * timestep) + (velocity * timestep) + position;
+		Vector2 new_velocity = (acceleration * timestep) + velocity;
+		Vector2 new_position = (acceleration * 0.5f * timestep * timestep) + (new_velocity * timestep) + position;
+			
+		Rect2 static_collision_box = RectPosSize(50, 50, 100, 100);
+		Rect2 collision_box = RectPosSize(new_position.x, new_position.y, bitmap_width, bitmap_height);
+		bool intersects = Intersect(static_collision_box, collision_box);
+		
+		if(!intersects)
+		{
+			velocity = new_velocity;
+			position = new_position;
+		}
+		else
+		{
+			velocity = V2(0, 0);
+		}
 		
 		DrawRectangle(0, 0, backbuffer.width, backbuffer.height, backbuffer, V4(0.0f, 0.0f, 0.0f, 1.0f));
 		DrawRectangle(100, 100, 100, 100, backbuffer, V4(position.x / (float)backbuffer.width, position.y / (float)backbuffer.height, 0.0f, 1.0f));
 		DrawRectangle(100, 100, 150, 150, backbuffer, V4(0.0f, 1.0f, 0.0f, 0.25f));
 		
-		//Rect2 static_collision_box = RectPosSize(0, 0, 100, 100);
-		DrawRectangle(0, 0, 100, 100, backbuffer, V4(1.0f, 0.0f, 0.0f, 1.0f));
+		DrawRectangle(static_collision_box.min.x, static_collision_box.min.y,
+					  GetWidth(static_collision_box), GetHeight(static_collision_box),
+					  backbuffer, V4(1.0f, 0.0f, 0.0f, 1.0f));
 		
-		//Rect2 collision_box = RectPosSize(position.x, position.y, bitmap_width, bitmap_height);
-		bool intersects = false; /*Intersect(static_collision_box, collision_box);*/
-		
-		/*
-		DrawRectangle(collision_box.x - 0.5f * collision_box.width,
-					  collision_box.y - 0.5f * collision_box.height,
-					  collision_box.width, collision_box.height, backbuffer, intersects ? V4(0.5f, 0.0f, 0.0f, 0.5f) : V4(0.5f, 0.5f, 0.5f, 0.5f));
-		*/
+		DrawRectangle(collision_box.min.x,
+					  collision_box.min.y,
+					  GetWidth(collision_box), GetHeight(collision_box), backbuffer, intersects ? V4(0.5f, 0.0f, 0.0f, 0.5f) : V4(0.5f, 0.5f, 0.5f, 0.5f));
 		
 		DrawBitmap(position.x - 0.5f * bitmap_width,
 		           position.y - 0.5f * bitmap_height,

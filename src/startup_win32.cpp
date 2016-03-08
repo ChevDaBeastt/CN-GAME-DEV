@@ -1,6 +1,10 @@
 #include "windows.h"
 #include "stdint.h"
+#include "stdlib.h"
+#include "stdio.h"
 #include "math.h"
+
+#define ArrayCount(array) ((sizeof(array)) / (sizeof((array)[0])))
 
 LRESULT WindowCallback(HWND hwnd, UINT uMsg,
 					   WPARAM wParam, LPARAM lParam)
@@ -33,6 +37,13 @@ struct bitmap_header
    uint16_t bits_per_pixel;
 };
 #pragma pack(pop)
+
+struct LoadedBitmap
+{
+	uint32_t *pixels;
+	int width;
+	int height;
+};
 
 struct Framebuffer
 {
@@ -121,6 +132,38 @@ Vector2 Normalize(Vector2 v)
 	return v / Length(v);
 }
 
+#define PI 3.14159265359f
+
+float GetAngle(Vector2 v)
+{
+	if(Length(v) > 0.0f)
+	{
+		Vector2 uv = Normalize(v);
+		return (asin(uv.y) * 180) / PI;
+	}
+	
+	return 0.0f;
+}
+
+enum Direction
+{
+	Direction_Up,
+	Direction_Down,
+	Direction_Left,
+	Direction_Right,
+	Direction_Unknown
+};
+
+Direction AngleToDirection(float angle)
+{
+	if((angle <= 135) && (angle > 45)) return Direction_Up;
+	if((angle <= 45) || (angle > 315)) return Direction_Right;
+	if((angle <= 225) && (angle > 135)) return Direction_Left;
+	if((angle <= 315) && (angle > 225)) return Direction_Down;
+	
+	return Direction_Unknown;
+}
+
 Rect2 RectPosSize(float x, float y, float width, float height)
 {
 	Rect2 result = {};
@@ -171,6 +214,56 @@ int RoundFloatToInt(float in)
 {
 	int output = (int)(in + 0.5f);
 	return output;
+}
+
+enum EntityType
+{
+	EntityType_Invalid,
+	EntityType_Player,
+	EntityType_Box
+};
+
+struct Entity
+{
+	EntityType type;
+	Vector2 velocity;
+	Rect2 bounds;
+};
+
+struct EntityArray
+{
+	Entity entities[32];
+	int count;
+};
+
+Entity *MakeEntity(EntityArray *entities, EntityType type, Vector2 pos, int width, int height, Vector2 velocity = {0, 0})
+{
+	Entity *entity = entities->entities + entities->count++;
+	
+	entity->type = type;
+	entity->bounds = RectPosSize(pos.x, pos.y, width, height);
+	entity->velocity = velocity;
+	
+	return entity;
+}
+
+LoadedBitmap LoadBitmap(char *path)
+{
+	LoadedBitmap result = {};
+	
+	HANDLE bitmap_handle = CreateFileA(path, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	int bitmap_file_size = GetFileSize(bitmap_handle, NULL);
+	uint8_t *bitmap_file_data = (uint8_t *)VirtualAlloc(NULL, bitmap_file_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+	DWORD number_of_bytes_read = 0;
+	ReadFile(bitmap_handle, bitmap_file_data, bitmap_file_size, &number_of_bytes_read, NULL);
+	CloseHandle(bitmap_handle);
+	
+	bitmap_header *header = (bitmap_header *)bitmap_file_data;
+	result.width = header->width;
+	result.height = header->height;
+	result.pixels = (uint32_t *)(bitmap_file_data + header->bitmap_offset);
+	
+	return result;
 }
 
 void DrawRectangle(int x_in, int y_in, int width, int height, Framebuffer fbo, Vector4 color)
@@ -228,9 +321,8 @@ void DrawRectangle(int x_in, int y_in, int width, int height, Framebuffer fbo, V
 	}
 }
 
-void DrawBitmap(int x_in, int y_in, int width, int height, Framebuffer fbo, uint32_t *bmap_pixel_data)
+void DrawBitmap(int x_in, int y_in, int width, int height, Framebuffer fbo, LoadedBitmap bitmap)
 {
-	int bitmap_width = width;
 	int x_offset = 0;
 	int y_offset = 0;
 	
@@ -276,7 +368,7 @@ void DrawBitmap(int x_in, int y_in, int width, int height, Framebuffer fbo, uint
 			float oldg = ((float)((old_color & 0x0000FF00) >> 8)) / 255.0f;
 			float oldb = ((float)((old_color & 0x000000FF) >> 0)) / 255.0f;
 			
-			uint32_t texel_color = *(bmap_pixel_data + ((y + y_offset) * bitmap_width) + x + x_offset);
+			uint32_t texel_color = *(bitmap.pixels + ((y + y_offset) * bitmap.width) + x + x_offset);
 			
 			float texelr = ((float)((texel_color & 0x00FF0000) >> 16)) / 255.0f;
 			float texelg = ((float)((texel_color & 0x0000FF00) >> 8)) / 255.0f;
@@ -341,24 +433,18 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 	bitmap_info.bmiHeader.biPlanes = 1;
 	bitmap_info.bmiHeader.biBitCount = 32;
 	bitmap_info.bmiHeader.biCompression = BI_RGB;
-
-	HANDLE bitmap_handle = CreateFileA("petro.bmp", GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-	int bitmap_file_size = GetFileSize(bitmap_handle, NULL);
-	uint8_t *bitmap_file_data = (uint8_t *)VirtualAlloc(NULL, bitmap_file_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-	DWORD number_of_bytes_read = 0;
-	ReadFile(bitmap_handle, bitmap_file_data, bitmap_file_size, &number_of_bytes_read, NULL);
-	CloseHandle(bitmap_handle);
 	
-	bitmap_header *header = (bitmap_header *)bitmap_file_data;
-	int bitmap_width = header->width;
-	int bitmap_height = header->height;
-	uint32_t *bmap_pixel_data = (uint32_t *)(bitmap_file_data + header->bitmap_offset);
+	LoadedBitmap player_head = LoadBitmap("petro.bmp");
 	
 	MSG message;
 	bool open = true;
 	Vector2 velocity = V2(0, 0);
 	Vector2 position = V2(200, 200);
 	float timestep = 1.0f; //TODO proper timestep
+	
+	EntityArray entities = {};
+	Entity *player_entity = MakeEntity(&entities, EntityType_Player, V2(200, 200), player_head.width, player_head.height, V2(10, 10));
+	MakeEntity(&entities, EntityType_Box, V2(50, 50), 100, 100);
 	
 	bool w_down = false;
 	bool a_down = false;
@@ -426,72 +512,134 @@ int WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
 			DispatchMessage(&message);
 		}
 		
-		float multiplier = 1.0f;
-		Vector2 acceleration = V2(0, 0);
-		
-		if(w_down)
-		{
-			acceleration = acceleration + V2(0, 1);
-		}
-		
-		if(s_down)
-		{
-			acceleration = acceleration + V2(0, -1);
-		}
-		
-		if(d_down)
-		{
-			acceleration = acceleration + V2(1, 0);
-		}
-		
-		if(a_down)
-		{
-			acceleration = acceleration + V2(-1, 0);
-		}
-		
-		if(q_down)
-		{
-			multiplier = 5.0f;
-		}
-		
-		if(Length(acceleration) > 0)
-		{
-			acceleration = Normalize(acceleration) * multiplier;
-		}
-		
-		acceleration = acceleration - (velocity * 0.05f);
-		Vector2 new_velocity = (acceleration * timestep) + velocity;
-		Vector2 new_position = (acceleration * 0.5f * timestep * timestep) + (new_velocity * timestep) + position;
-			
-		Rect2 static_collision_box = RectPosSize(50, 50, 100, 100);
-		Rect2 collision_box = RectPosSize(new_position.x, new_position.y, bitmap_width, bitmap_height);
-		bool intersects = Intersect(static_collision_box, collision_box);
-		
-		if(!intersects)
-		{
-			velocity = new_velocity;
-			position = new_position;
-		}
-		else
-		{
-			velocity = V2(0, 0);
-		}
-		
 		DrawRectangle(0, 0, backbuffer.width, backbuffer.height, backbuffer, V4(0.0f, 0.0f, 0.0f, 1.0f));
 		DrawRectangle(100, 100, 100, 100, backbuffer, V4(position.x / (float)backbuffer.width, position.y / (float)backbuffer.height, 0.0f, 1.0f));
 		DrawRectangle(100, 100, 150, 150, backbuffer, V4(0.0f, 1.0f, 0.0f, 0.25f));
 		
-		DrawRectangle(static_collision_box.min.x, static_collision_box.min.y,
-					  GetWidth(static_collision_box), GetHeight(static_collision_box),
-					  backbuffer, V4(1.0f, 0.0f, 0.0f, 1.0f));
+		for(int i = 0; i < entities.count; i++)
+		{
+			Entity *entity = entities.entities + i;
+			
+			if(entity->type != EntityType_Invalid)
+			{	
+				Vector2 acceleration = V2(0, 0);
+				
+				if(entity == player_entity)
+				{
+					float multiplier = 1.0f;
+					
+					if(w_down)
+					{
+						acceleration = acceleration + V2(0, 1);
+					}
+					
+					if(s_down)
+					{
+						acceleration = acceleration + V2(0, -1);
+					}
+					
+					if(d_down)
+					{
+						acceleration = acceleration + V2(1, 0);
+					}
+					
+					if(a_down)
+					{
+						acceleration = acceleration + V2(-1, 0);
+					}
+					
+					if(q_down)
+					{
+						multiplier = 5.0f;
+					}
+					
+					if(Length(acceleration) > 0)
+					{
+						acceleration = Normalize(acceleration) * multiplier;
+					}
+				}
+				
+				acceleration = acceleration - (entity->velocity * 0.05f);
+				Vector2 new_velocity = (acceleration * timestep) + entity->velocity;
+				Vector2 new_position = (acceleration * 0.5f * timestep * timestep) + (new_velocity * timestep) + GetCenter(entity->bounds);
+				Rect2 collision_box = RectPosSize(new_position.x, new_position.y, GetWidth(entity->bounds), GetHeight(entity->bounds));
+				bool intersects = false;
+			
+				for(int j = 0; j < entities.count; j++)
+				{
+					if(j != i)
+					{
+						Entity *other_entity = entities.entities + j;
+						intersects = intersects || Intersect(other_entity->bounds, collision_box);
+					}
+				}
+				
+				if(!intersects)
+				{
+					entity->velocity = new_velocity;
+					entity->bounds = RectPosSize(new_position.x, new_position.y, GetWidth(entity->bounds), GetHeight(entity->bounds));
+				}
+				else
+				{
+					entity->velocity = V2(0, 0);
+				}
+				
+				switch(entity->type)
+				{
+					case EntityType_Box:
+					{
+						DrawRectangle(entity->bounds.min.x, entity->bounds.min.y,
+									  GetWidth(entity->bounds), GetHeight(entity->bounds),
+									  backbuffer, V4(1.0f, 0.0f, 0.0f, 1.0f));
+					}
+					break;
+					
+					case EntityType_Player:
+					{
+						float angle = GetAngle(entity->velocity);
+						Direction direction = AngleToDirection(angle);
+						Vector4 color = V4(1.0f, 1.0f, 1.0f, 0.0f);
+						
+						if(direction == Direction_Up)
+						{
+							color = V4(1.0f, 0.0f, 0.0f, 1.0f);
+						}
+						else if(direction == Direction_Down)
+						{
+							color = V4(1.0f, 1.0f, 0.0f, 1.0f);
+						}
+						else if(direction == Direction_Left)
+						{
+							color = V4(0.0f, 1.0f, 1.0f, 1.0f);
+						}
+						else if(direction == Direction_Right)
+						{
+							color = V4(0.0f, 1.0f, 0.0f, 1.0f);
+						}
+						
+						char output[255];
+						sprintf(output, "%f\n", angle);
+						OutputDebugStringA(output);
+						
+						DrawRectangle(300,
+									  300,
+									  10, 10,
+									  backbuffer, color);
+						
+						DrawRectangle(entity->bounds.min.x,
+									  entity->bounds.min.y,
+									  GetWidth(entity->bounds), GetHeight(entity->bounds),
+									  backbuffer, intersects ? V4(0.5f, 0.0f, 0.0f, 0.5f) : V4(0.5f, 0.5f, 0.5f, 0.5f));
 		
-		DrawRectangle(collision_box.min.x,
-					  collision_box.min.y,
-					  GetWidth(collision_box), GetHeight(collision_box), backbuffer, intersects ? V4(0.5f, 0.0f, 0.0f, 0.5f) : V4(0.5f, 0.5f, 0.5f, 0.5f));
-		
-		DrawBitmap(position.x - 0.5f * bitmap_width,
-		           position.y - 0.5f * bitmap_height,
-				   bitmap_width, bitmap_height, backbuffer, bmap_pixel_data);
+						DrawBitmap(entity->bounds.min.x,
+								   entity->bounds.min.y,
+								   GetWidth(entity->bounds), GetHeight(entity->bounds),
+								   backbuffer, player_head);
+					}
+					break;
+				}
+			}
+		}
 		
 		StretchDIBits(window_context,
 					  0, 0, backbuffer.width, backbuffer.height,
